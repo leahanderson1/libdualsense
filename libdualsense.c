@@ -14,7 +14,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
-#include <threads.h>
 
 #include <hidapi/hidapi.h>
 

@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <hidapi/hidapi.h>
 #include "dualsense.h"
 
@@ -6,6 +7,8 @@ int main() {
 	if (!dualsense_init(&ds, NULL))
 			return 1;
 	dualsense_set_microphone_led_status(&ds, DS_MIC_LED_PULSE);
-	dualsense_set_lightbar_rgb(&ds, 245, 0, 0, 255);
+	dualsense_set_lightbar_rgb(&ds, 245, 50, 200, 255);
+	dualsense_set_player_leds(&ds, 3, true);
+	printf("battery: %i percent\n", dualsense_battery(&ds));
 	return 0;
 }

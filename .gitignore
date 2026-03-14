@@ -1,2 +1,7 @@
 *.o
 *.a
+*.lib
+*.dylib
+a.out
+hidapi*
+example.exe
