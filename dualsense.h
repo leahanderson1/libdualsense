@@ -1,8 +1,10 @@
 #ifndef LIBDUALSENSE_H
 #define LIBDUALSENSE_H
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <stdint.h>
 #include <hidapi/hidapi.h>
-#include <stdlib.h>
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *  HID driver for Sony DualSense(TM) controller.
@@ -107,11 +109,20 @@
 #define DS_TRIGGER_EFFECT_VIBRATION 0x26
 #define DS_TRIGGER_EFFECT_MACHINE 0x27
 
-/* firmware update */
-#define DS_FEATURE_REPORT_FW 0xF4
-#define DS_FEATURE_REPORT_FW_STATUS 0xF5
-#define DS_FIRMWARE_SIZE 950272
-#define DS_BATTERY_THRESHOLD 10
+// Error codes
+#define DS_SUCCESS 0
+#define DS_INVALID -1
+#define DS_ERROR -2
+
+// microphone LED states
+#define DS_MIC_LED_OFF 0
+#define DS_MIC_LED_ON 1
+#define DS_MIC_LED_PULSE 2
+
+// triggers
+#define DS_TRIGGER_LEFT 0
+#define DS_TRIGGER_RIGHT 1
+#define DS_TRIGGER_BOTH 2
 
 struct dualsense_touch_point {
     uint8_t contact;
@@ -261,8 +272,31 @@ struct dualsense {
     uint8_t output_seq;
     uint16_t product_id;
 };
-static inline int atoi_x(const char *s)
-{
-    return strtol(s, NULL, 0);
+int dualsense_command_trigger_vibration_raw(struct dualsense *ds,uint8_t trigger,uint8_t strength[10],uint8_t frequency);
+int dualsense_command_trigger_feedback_raw(struct dualsense *ds,uint8_t trigger,uint8_t strength[10]);
+int dualsense_command_trigger_vibration(struct dualsense *ds,uint8_t trigger,uint8_t position,uint8_t amplitude,uint8_t frequency);
+int dualsense_command_trigger_machine(struct dualsense *ds,uint8_t trigger,uint8_t start_position,uint8_t end_position,uint8_t strength_a,uint8_t strength_b,uint8_t frequency,uint8_t period);
+int dualsense_command_trigger_galloping(struct dualsense *ds,uint8_t trigger,uint8_t start_position,uint8_t end_position,uint8_t first_foot,uint8_t second_foot,uint8_t frequency);
+int dualsense_command_trigger_bow(struct dualsense *ds,uint8_t trigger,uint8_t start_position,uint8_t end_position,uint8_t strength,uint8_t snap_force);
+int dualsense_command_trigger_weapon(struct dualsense *ds,uint8_t trigger,uint8_t start_position,uint8_t end_position,uint8_t strength);
+int dualsense_command_trigger_feedback(struct dualsense *ds,uint8_t trigger,uint8_t position,uint8_t strength);
+int dualsense_set_trigger_off(struct dualsense *ds,uint8_t trigger);
+int dualsense_command_trigger(struct dualsense *ds,uint8_t trigger,uint8_t mode,uint8_t param1,uint8_t param2,uint8_t param3,uint8_t param4,uint8_t param5,uint8_t param6,uint8_t param7,uint8_t param8,uint8_t param9);
+int dualsense_set_vibration_attenuation(struct dualsense *ds,uint8_t rumble_attenuation,uint8_t trigger_attenuation);
+int dualsense_set_microphone_led_status(struct dualsense *ds,uint8_t state);
+int dualsense_set_microphone_state(struct dualsense *ds,bool state);
+int dualsense_set_player_leds(struct dualsense *ds,uint8_t number,bool instant);
+int dualsense_set_led_brightness(struct dualsense *ds,bool number);
+int dualsense_set_lightbar_rgb(struct dualsense *ds,uint8_t red,uint8_t green,uint8_t blue,uint8_t brightness);
+int dualsense_set_lightbar_state(struct dualsense *ds,bool state);
+int dualsense_battery(struct dualsense *ds);
+int dualsense_power_off(struct dualsense *ds);
+void dualsense_close(struct dualsense *ds);
+bool dualsense_init(struct dualsense *ds,const char *serial);
+struct hid_device_info *dualsense_hid_enumerate(void);
+void dualsense_send_output_report(struct dualsense *ds,struct dualsense_output_report *report);
+void dualsense_init_output_report(struct dualsense *ds,struct dualsense_output_report *rp,void *buf);
+#ifdef __cplusplus
 }
+#endif
 #endif

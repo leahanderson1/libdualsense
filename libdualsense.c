@@ -14,7 +14,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
-
 #include <threads.h>
 
 #include <hidapi/hidapi.h>
@@ -73,7 +72,7 @@ void dualsense_send_output_report(struct dualsense *ds, struct dualsense_output_
 
     int res = hid_write(ds->dev, report->data, report->len);
     if (res < 0) {
-        fprintf(stderr, "Error: %ls\n", hid_error(ds->dev));
+        fprintf(stderr, "err:ds: %ls\n", hid_error(ds->dev));
     }
 }
 
@@ -125,9 +124,9 @@ bool dualsense_init(struct dualsense *ds, const char *serial)
 
     if (!found) {
         if (serial) {
-            fprintf(stderr, "Device '%s' not found\n", serial);
+            fprintf(stderr, "err:ds: device '%s' not found\n", serial);
         } else {
-            fprintf(stderr, "No device found\n");
+            fprintf(stderr, "err:ds: no device found\n");
         }
         ret = false;
         goto out;
@@ -135,7 +134,7 @@ bool dualsense_init(struct dualsense *ds, const char *serial)
 
     ds->dev = hid_open(DS_VENDOR_ID, dev->product_id, dev->serial_number);
     if (!ds->dev) {
-        fprintf(stderr, "Failed to open device: %ls\n", hid_error(NULL));
+        fprintf(stderr, "err:ds: failed to open device: %ls\n", hid_error(NULL));
         ret = false;
         goto out;
     }
@@ -143,7 +142,7 @@ bool dualsense_init(struct dualsense *ds, const char *serial)
     wchar_t *serial_number = dev->serial_number;
 
     if (wcslen(serial_number) != 17) {
-        fprintf(stderr, "Invalid device serial number: %ls\n", serial_number);
+        fprintf(stderr, "err:ds: invalid device serial number: %ls\n", serial_number);
         // Let's just fake serial number as everything will still work
         serial_number = L"00:00:00:00:00:00";
     }
@@ -168,12 +167,12 @@ out:
     return ret;
 }
 
-void dualsense_destroy(struct dualsense *ds)
+void dualsense_close(struct dualsense *ds)
 {
     hid_close(ds->dev);
 }
 
-int command_power_off(struct dualsense *ds)
+int dualsense_power_off(struct dualsense *ds)
 {
     uint8_t buf[DS_FEATURE_REPORT_BLUETOOTH_CONTROL_SIZE];
     memset(buf, 0, sizeof(buf));
@@ -192,24 +191,24 @@ int command_power_off(struct dualsense *ds)
 
     int res = hid_send_feature_report(ds->dev, buf, sizeof(buf));
     if (res != sizeof(buf)) {
-        fprintf(stderr, "Invalid feature report\n");
-        return 2;
+        fprintf(stderr, "err:ds: invalid feature report\n");
+        return DS_INVALID;
     }
 
     return 0;
 }
 
-int command_battery(struct dualsense *ds)
+int dualsense_battery(struct dualsense *ds)
 {
     uint8_t data[DS_INPUT_REPORT_BT_SIZE];
     int res = hid_read_timeout(ds->dev, data, sizeof(data), 1000);
     if (res <= 0) {
         if (res == 0) {
-            fprintf(stderr, "Timeout waiting for report\n");
+            fprintf(stderr, "err:ds: timeout waiting for report\n");
         } else {
-		    fprintf(stderr, "Failed to read report %ls\n", hid_error(ds->dev));
+		    fprintf(stderr, "err:ds: failed to read report %ls\n", hid_error(ds->dev));
 		}
-		return 2;
+		return DS_ERROR;
 	    }
 
 	    struct dualsense_input_report *ds_report;
@@ -221,8 +220,8 @@ int command_battery(struct dualsense *ds)
 		/* uint32_t report_crc = *(uint32_t*)&data[res - 4]; */
 		ds_report = (struct dualsense_input_report *)&data[2];
 	    } else {
-		fprintf(stderr, "Unhandled report ID %d\n", (int)data[0]);
-		return 3;
+		fprintf(stderr, "err:ds: unhandled report ID %d\n", (int)data[0]);
+		return DS_ERROR;
 	    }
 
 	    const char *battery_status;
@@ -250,21 +249,22 @@ int command_battery(struct dualsense *ds)
 		break;
 	    case 0xa: /* voltage or temperature out of range */
 	    case 0xb: /* temperature error */
-		battery_capacity = 0;
+		// since the error flags are negative, it is extremely easy for a developer to tell if something got fucked up, and get the battery percentage in the same return value. useful, huh?
+		battery_capacity = DS_ERROR;
 		battery_status = "not-charging";
+		fprintf(stderr, "ds:warn: temperature error has been detected. retuning DS_ERROR\n");
 		break;
 	    case 0xf: /* charging error */
 	    default:
-		battery_capacity = 0;
+		battery_capacity = DS_ERROR;
 		battery_status = "unknown";
+		fprintf(stderr, "ds:warn: charging error has been detected. returning DS_ERROR\n");
 	    }
 #undef min
-
-	    printf("%d %s\n", (int)battery_capacity, battery_status);
-	    return 0;
+	    return (int)battery_capacity;
 	}
-
-	int command_info(struct dualsense *ds)
+/* can't think of a good way to implement this
+	int dualsense_info(struct dualsense *ds)
 	{
 	    uint8_t buf[DS_FEATURE_REPORT_FIRMWARE_INFO_SIZE];
 	    memset(buf, 0, sizeof(buf));
@@ -284,34 +284,29 @@ int command_battery(struct dualsense *ds)
 	    printf("Fw version: %i %i %i\n", ds_report->fw_version_1, ds_report->fw_version_2, ds_report->fw_version_3);
 	    printf("Sw series: %i\n", ds_report->sw_series);
 	    printf("Update version: %04x\n", ds_report->update_version);
-	    /* printf("Device info: %.12s\n", ds_report->device_info); */
-	    /* printf("Update image info: %c\n", ds_report->update_image_info); */
+	    \/\*printf("Device info: %.12s\n", ds_report->device_info); \*\/
+	    \/\*printf("Update image info: %c\n", ds_report->update_image_info); \*\/
 
 	    return 0;
-	}
-
-	int command_lightbar1(struct dualsense *ds, char *state)
+	} */
+	int dualsense_set_lightbar_state(struct dualsense *ds, bool state)
 	{
 	    struct dualsense_output_report rp;
 	    uint8_t rbuf[DS_OUTPUT_REPORT_BT_SIZE];
 	    dualsense_init_output_report(ds, &rp, rbuf);
 
 	    rp.common->valid_flag2 = DS_OUTPUT_VALID_FLAG2_LIGHTBAR_SETUP_CONTROL_ENABLE;
-	    if (!strcmp(state, "on")) {
+	    if (state)
 		rp.common->lightbar_setup = DS_OUTPUT_LIGHTBAR_SETUP_LIGHT_ON;
-	    } else if (!strcmp(state, "off")) {
+	    else 
 		rp.common->lightbar_setup = DS_OUTPUT_LIGHTBAR_SETUP_LIGHT_OUT;
-	    } else {
-		fprintf(stderr, "Invalid state\n");
-		return 1;
-	    }
 
 	    dualsense_send_output_report(ds, &rp);
 
 	    return 0;
 	}
 
-	int command_lightbar3(struct dualsense *ds, uint8_t red, uint8_t green, uint8_t blue, uint8_t brightness)
+	int dualsense_set_lightbar_rgb(struct dualsense *ds, uint8_t red, uint8_t green, uint8_t blue, uint8_t brightness)
 	{
 	    struct dualsense_output_report rp;
 	    uint8_t rbuf[DS_OUTPUT_REPORT_BT_SIZE];
@@ -329,26 +324,21 @@ int command_battery(struct dualsense *ds)
 	    return 0;
 	}
 
-	int command_led_brightness(struct dualsense *ds, uint8_t number)
+	int dualsense_set_led_brightness(struct dualsense *ds, bool number)
 	{
-	    if (number > 2) {
-		fprintf(stderr, "Invalid brightness level\n");
-		return 1;
-	    }
-
 	    struct dualsense_output_report rp;
 	    uint8_t rbuf[DS_OUTPUT_REPORT_BT_SIZE];
 	    dualsense_init_output_report(ds, &rp, rbuf);
 
 	    rp.common->valid_flag2 = DS_OUTPUT_VALID_FLAG2_LED_BRIGHTNESS_CONTROL_ENABLE;
-	    rp.common->led_brightness = number;
+	    rp.common->led_brightness = (uint8_t)number;
 
 	    dualsense_send_output_report(ds, &rp);
 
 	    return 0;
 	}
 
-	int command_player_leds(struct dualsense *ds, uint8_t number, bool instant)
+	int dualsense_set_player_leds(struct dualsense *ds, uint8_t number, bool instant)
 	{
 	    const int player_ids[] = {
 		0,
@@ -378,13 +368,14 @@ int command_battery(struct dualsense *ds)
 	    return 0;
 	}
 
-	int command_microphone(struct dualsense *ds, char *state)
+	int dualsense_set_microphone_state(struct dualsense *ds, bool state)
 	{
 	    struct dualsense_output_report rp;
 	    uint8_t rbuf[DS_OUTPUT_REPORT_BT_SIZE];
 	    dualsense_init_output_report(ds, &rp, rbuf);
 
 	    rp.common->valid_flag1 = DS_OUTPUT_VALID_FLAG1_POWER_SAVE_CONTROL_ENABLE;
+	    /* i see once again we are using a STRING FOR A VALUE THAT SHOULD BE A BOOLEAN
 	    if (!strcmp(state, "on")) {
 		rp.common->power_save_control &= ~DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE & ~DS_OUTPUT_POWER_SAVE_CONTROL_AUDIO;
 	    } else if (!strcmp(state, "off")) {
@@ -393,35 +384,33 @@ int command_battery(struct dualsense *ds)
 		fprintf(stderr, "Invalid state\n");
 		return 1;
 	    }
-
+	    */
+	    if (state)
+		rp.common->power_save_control &= ~DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE & ~DS_OUTPUT_POWER_SAVE_CONTROL_AUDIO;
+	    else
+		rp.common->power_save_control |= DS_OUTPUT_POWER_SAVE_CONTROL_MIC_MUTE;
 	    dualsense_send_output_report(ds, &rp);
-
 	    return 0;
 	}
 
-	int command_microphone_led(struct dualsense *ds, char *state)
+	int dualsense_set_microphone_led_status(struct dualsense *ds, uint8_t state)
 	{
 	    struct dualsense_output_report rp;
 	    uint8_t rbuf[DS_OUTPUT_REPORT_BT_SIZE];
 	    dualsense_init_output_report(ds, &rp, rbuf);
 
 	    rp.common->valid_flag1 = DS_OUTPUT_VALID_FLAG1_MIC_MUTE_LED_CONTROL_ENABLE;
-	    if (!strcmp(state, "on")) {
-		rp.common->mute_button_led = 1;
-	    } else if (!strcmp(state, "off")) {
-		rp.common->mute_button_led = 0;
-	    } else if (!strcmp(state, "pulse")) {
-		rp.common->mute_button_led = 2;
-	    } else {
-		fprintf(stderr, "Invalid state\n");
-		return 1;
-	    }
+	    if (state > 2)
+		    // there are only 3 states the led can be in
+		    return DS_INVALID;
+	    rp.common->mute_button_led = state;
 
 	    dualsense_send_output_report(ds, &rp);
 
 	    return 0;
 	}
-
+	// not implementing allat
+	/*
 	int command_microphone_mode(struct dualsense *ds, char *state)
 	{
 	    struct dualsense_output_report rp;
@@ -458,14 +447,14 @@ int command_battery(struct dualsense *ds)
 
 	    return 0;
 	}
-
-	int command_speaker(struct dualsense *ds, char *state)
+	*/
+	/*int command_speaker(struct dualsense *ds, char *state)
 	{
 	    struct dualsense_output_report rp;
 	    uint8_t rbuf[DS_OUTPUT_REPORT_BT_SIZE];
 	    dualsense_init_output_report(ds, &rp, rbuf);
 
-	    rp.common->valid_flag0 = DS_OUTPUT_VALID_FLAG0_AUDIO_CONTROL_ENABLE;
+	    rp.common->valid_flag0 = DS_OUTPUT_VALID_FLAG0_AUDIO_CONTROL_ENABLE;*/
 	    /* value
 	     * | /left headphone
 	     * | | / right headphone
@@ -474,14 +463,14 @@ int command_battery(struct dualsense *ds)
 	     * 1 L_L_X
 	     * 2 L_L_R
 	     * 3 X_X_R
-	     */
-	    if (!strcmp(state, "internal")) { /* right channel to speaker */
+	     *//*
+	    if (!strcmp(state, "internal")) { // right channel to speaker
 		rp.common->audio_flags = 3 << DS_OUTPUT_AUDIO_OUTPUT_PATH_SHIFT;
-	    } else if (!strcmp(state, "headphone")) { /* stereo channel to headphone */
+	    } else if (!strcmp(state, "headphone")) { // stereo channel to headphone 
 		rp.common->audio_flags = 0;
-	    } else if (!strcmp(state, "monoheadphone")) { /* left channel to headphone */
+	    } else if (!strcmp(state, "monoheadphone")) { // left channel to headphone
 		rp.common->audio_flags = 1 << DS_OUTPUT_AUDIO_OUTPUT_PATH_SHIFT;
-	    } else if (!strcmp(state, "both")) { /* left channel to headphone, right channel to speaker */
+	    } else if (!strcmp(state, "both")) { // left channel to headphone, right channel to speaker
 		rp.common->audio_flags = 2 << DS_OUTPUT_AUDIO_OUTPUT_PATH_SHIFT;
 	    } else {
 		fprintf(stderr, "Invalid state\n");
@@ -501,15 +490,15 @@ int command_battery(struct dualsense *ds)
 
 	    uint8_t max_volume = 255;
 
-	    /* TODO see if we can get old values of volumes to be able to set values independently */
+	    // TODO see if we can get old values of volumes to be able to set values independently
 	    rp.common->valid_flag0 = DS_OUTPUT_VALID_FLAG0_HEADPHONE_VOLUME_ENABLE;
 	    rp.common->headphone_audio_volume = volume * 0x7f / max_volume;
 
 	    rp.common->valid_flag0 |= DS_OUTPUT_VALID_FLAG0_SPEAKER_VOLUME_ENABLE;
-	    /* the PS5 use 0x3d-0x64 trying over 0x64 doesnt change but below 0x3d can still lower the volume */
+	    // the PS5 use 0x3d-0x64. trying over 0x64 doesnt change anything, but below 0x3d can still lower the volume
 	    rp.common->speaker_audio_volume = volume * 0x64 / max_volume;
 
-	    /* if we want to set speaker pre gain */
+	    // if we want to set speaker pre gain
 	    //rp.common->valid_flag1 = DS_OUTPUT_VALID_FLAG1_AUDIO_CONTROL2_ENABLE;
 	    //rp.common->audio_flags2 = (3 << DS_OUTPUT_AUDIO2_SPEAKER_PREGAIN_SHIFT);
 
@@ -517,8 +506,8 @@ int command_battery(struct dualsense *ds)
 
 	    return 0;
 	}
-
-	int command_vibration_attenuation(struct dualsense *ds, uint8_t rumble_attenuation, uint8_t trigger_attenuation)
+	*/
+	int dualsense_set_vibration_attenuation(struct dualsense *ds, uint8_t rumble_attenuation, uint8_t trigger_attenuation)
 	{
 	    struct dualsense_output_report rp;
 	    uint8_t rbuf[DS_OUTPUT_REPORT_BT_SIZE];
@@ -532,20 +521,20 @@ int command_battery(struct dualsense *ds)
 
 	    return 0;
 	}
-
-	int command_trigger(struct dualsense *ds, char *trigger, uint8_t mode, uint8_t param1, uint8_t param2, uint8_t param3, uint8_t param4, uint8_t param5, uint8_t param6, uint8_t param7, uint8_t param8, uint8_t param9 )
+	// TODO:  label the parameters
+	int dualsense_command_trigger(struct dualsense *ds, uint8_t trigger, uint8_t mode, uint8_t param1, uint8_t param2, uint8_t param3, uint8_t param4, uint8_t param5, uint8_t param6, uint8_t param7, uint8_t param8, uint8_t param9 )
 	{
 	    struct dualsense_output_report rp;
 	    uint8_t rbuf[DS_OUTPUT_REPORT_BT_SIZE];
 	    dualsense_init_output_report(ds, &rp, rbuf);
-
-	    if (!strcmp(trigger, "right") || !strcmp(trigger, "both")) {
+	    bool is_both = (trigger == DS_TRIGGER_BOTH);
+	    if (trigger != DS_TRIGGER_RIGHT || !is_both) {
 		rp.common->valid_flag0 = DS_OUTPUT_VALID_FLAG0_RIGHT_TRIGGER_MOTOR_ENABLE;
 	    }
-	    if (!strcmp(trigger, "left") || !strcmp(trigger, "both")) {
+	    if (trigger != DS_TRIGGER_LEFT || !is_both) {
 		rp.common->valid_flag0 |= DS_OUTPUT_VALID_FLAG0_LEFT_TRIGGER_MOTOR_ENABLE;
 	    }
-
+	    // huh. so that flag appears to just make the controller FW ignore the output report for that trigger. cool.
 	    rp.common->right_trigger_motor_mode = mode;
 	    rp.common->right_trigger_param[0] = param1;
 	    rp.common->right_trigger_param[1] = param2;
@@ -573,12 +562,12 @@ int command_battery(struct dualsense *ds)
 	    return 0;
 	}
 
-	int command_trigger_off(struct dualsense *ds, char *trigger)
+	int dualsense_set_trigger_off(struct dualsense *ds, uint8_t trigger)
 	{
-	    return command_trigger(ds, trigger, DS_TRIGGER_EFFECT_OFF, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+	    return dualsense_command_trigger(ds, trigger, DS_TRIGGER_EFFECT_OFF, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 	}
 
-	static int trigger_bitpacking_array(struct dualsense *ds, char *trigger, uint8_t mode, uint8_t strength[10], uint8_t frequency)
+	static int trigger_bitpacking_array(struct dualsense *ds, uint8_t trigger, uint8_t mode, uint8_t strength[10], uint8_t frequency)
 	{
 	    uint32_t strength_zones = 0;
 	    uint16_t active_zones = 0;
@@ -594,7 +583,7 @@ int command_battery(struct dualsense *ds)
 		}
 	    }
 
-	    return command_trigger(ds, trigger, mode,
+	    return dualsense_command_trigger(ds, trigger, mode,
 				   (uint8_t)((active_zones >> 0) & 0xff),
 				   (uint8_t)((active_zones >> 8) & 0xff),
 				   (uint8_t)((strength_zones >> 0) & 0xff),
@@ -605,7 +594,7 @@ int command_battery(struct dualsense *ds)
 				   frequency);
 	}
 
-	int command_trigger_feedback(struct dualsense *ds, char *trigger, uint8_t position, uint8_t strength)
+	int dualsense_command_trigger_feedback(struct dualsense *ds, uint8_t trigger, uint8_t position, uint8_t strength)
 	{
 	    if (position > 9) {
 		fprintf(stderr, "position must be between 0 and 9\n");
@@ -623,7 +612,7 @@ int command_battery(struct dualsense *ds)
 	    return trigger_bitpacking_array(ds, trigger, DS_TRIGGER_EFFECT_FEEDBACK, strength_array, 0);
 	}
 
-	int command_trigger_weapon(struct dualsense *ds, char *trigger, uint8_t start_position, uint8_t end_position, uint8_t strength)
+	int dualsense_command_trigger_weapon(struct dualsense *ds, uint8_t trigger, uint8_t start_position, uint8_t end_position, uint8_t strength)
 	{
 	    if (start_position > 7 || start_position < 2) {
 		fprintf(stderr, "start position must be between 2 and 7\n");
@@ -639,14 +628,14 @@ int command_battery(struct dualsense *ds)
 	    }
 
 	    uint16_t start_stop_zones = (uint16_t)((1 << start_position) | (1 << end_position));
-	    return command_trigger(ds, trigger, DS_TRIGGER_EFFECT_WEAPON,
+	    return dualsense_command_trigger(ds, trigger, DS_TRIGGER_EFFECT_WEAPON,
 				   (uint8_t)((start_stop_zones >> 0) & 0xff),
 				   (uint8_t)((start_stop_zones >> 8) & 0xff),
 				   strength-1,
 				   0, 0, 0, 0, 0, 0);
 	}
 
-	int command_trigger_bow(struct dualsense *ds, char *trigger, uint8_t start_position, uint8_t end_position, uint8_t strength, uint8_t snap_force)
+	int dualsense_command_trigger_bow(struct dualsense *ds, uint8_t trigger, uint8_t start_position, uint8_t end_position, uint8_t strength, uint8_t snap_force)
 	{
 	    if (start_position > 8 || !(start_position > 0)) {
 		fprintf(stderr, "start position must be between 0 and 8\n");
@@ -667,14 +656,14 @@ int command_battery(struct dualsense *ds)
 
 	    uint16_t start_stop_zones = (uint16_t)((1 << start_position) | (1 << end_position));
 	    uint32_t force_pair =  (uint16_t)(((strength -1) & 0x07) | (((snap_force -1 ) & 0x07) << 3 ));
-	    return command_trigger(ds, trigger, DS_TRIGGER_EFFECT_BOW,
+	    return dualsense_command_trigger(ds, trigger, DS_TRIGGER_EFFECT_BOW,
 				   (uint8_t)((start_stop_zones >> 0) & 0xff),
 				   (uint8_t)((start_stop_zones >> 8) & 0xff),
 				   (uint8_t)((force_pair >> 0) & 0xff),
 				   0, 0, 0, 0, 0, 0);
 	}
 
-	int command_trigger_galloping(struct dualsense *ds, char *trigger, uint8_t start_position, uint8_t end_position, uint8_t first_foot, uint8_t second_foot, uint8_t frequency)
+	int dualsense_command_trigger_galloping(struct dualsense *ds, uint8_t trigger, uint8_t start_position, uint8_t end_position, uint8_t first_foot, uint8_t second_foot, uint8_t frequency)
 	{
 	    if (start_position > 8) {
 		fprintf(stderr, "start position must be between 0 and 8\n");
@@ -702,7 +691,7 @@ int command_battery(struct dualsense *ds)
 	    }
 	    uint16_t start_stop_zones = (uint16_t)((1 << start_position) | (1 << end_position));
 	    uint32_t ratio =  (uint16_t)((second_foot & 0x07) | ((first_foot & 0x07) << 3 ));
-	    return command_trigger(ds, trigger, DS_TRIGGER_EFFECT_GALLOPING,
+	    return dualsense_command_trigger(ds, trigger, DS_TRIGGER_EFFECT_GALLOPING,
 				   (uint8_t)((start_stop_zones >> 0) & 0xff),
 				   (uint8_t)((start_stop_zones >> 8) & 0xff),
 				   (uint8_t)((ratio >> 0) & 0xff),
@@ -710,7 +699,7 @@ int command_battery(struct dualsense *ds)
 				   0, 0, 0, 0, 0);
 	}
 
-	int command_trigger_machine(struct dualsense *ds, char *trigger, uint8_t start_position, uint8_t end_position, uint8_t strength_a, uint8_t strength_b, uint8_t frequency, uint8_t period)
+	int dualsense_command_trigger_machine(struct dualsense *ds, uint8_t trigger, uint8_t start_position, uint8_t end_position, uint8_t strength_a, uint8_t strength_b, uint8_t frequency, uint8_t period)
 	{
 	    // if start_position == 0 nothing happen
 	    if (start_position > 8 || !(start_position > 0)) {
@@ -735,7 +724,7 @@ int command_battery(struct dualsense *ds)
 	    }
 	    uint16_t start_stop_zones = (uint16_t)((1 << start_position) | (1 << end_position));
 	    uint32_t force_pair =  (uint16_t)((strength_a & 0x07) | ((strength_b & 0x07) << 3 ));
-	    return command_trigger(ds, trigger, DS_TRIGGER_EFFECT_MACHINE,
+	    return dualsense_command_trigger(ds, trigger, DS_TRIGGER_EFFECT_MACHINE,
 				   (uint8_t)((start_stop_zones >> 0) & 0xff),
 				   (uint8_t)((start_stop_zones >> 8) & 0xff),
 				   (uint8_t)((force_pair >> 0) & 0xff),
@@ -744,7 +733,7 @@ int command_battery(struct dualsense *ds)
 				   0, 0, 0, 0);
 	}
 
-	int command_trigger_vibration(struct dualsense *ds, char *trigger, uint8_t position, uint8_t amplitude, uint8_t frequency)
+	int dualsense_command_trigger_vibration(struct dualsense *ds, uint8_t trigger, uint8_t position, uint8_t amplitude, uint8_t frequency)
 	{
 	    if (position > 9) {
 		fprintf(stderr, "position must be between 0 and 9\n");
@@ -767,355 +756,17 @@ int command_battery(struct dualsense *ds)
 
 	}
 
-	int command_trigger_feedback_raw(struct dualsense *ds, char *trigger, uint8_t strength[10] )
+	int dualsense_command_trigger_feedback_raw(struct dualsense *ds, uint8_t trigger, uint8_t strength[10] )
 	{
 	    return trigger_bitpacking_array(ds, trigger, DS_TRIGGER_EFFECT_FEEDBACK, strength, 0);
 	}
 
-	int command_trigger_vibration_raw(struct dualsense *ds, char *trigger, uint8_t strength[10], uint8_t frequency)
+	int dualsense_command_trigger_vibration_raw(struct dualsense *ds, uint8_t trigger, uint8_t strength[10], uint8_t frequency)
 	{
 	    return trigger_bitpacking_array(ds, trigger, DS_TRIGGER_EFFECT_VIBRATION, strength, frequency);
 	}
-
-int dualsense_send_fw_feature(struct dualsense *ds, uint8_t *buf)
-{
-	if (ds->bt) {
-		fprintf(stderr, "Update via Bluetooth is not supported.\n");
-		fprintf(stderr, "Please connect to USB.\n");
-		return -1;
-	}
-	
-	int res = hid_send_feature_report(ds->dev, buf, DS_INPUT_REPORT_USB_SIZE);
-	if (res != DS_INPUT_REPORT_USB_SIZE){
-		fprintf(stderr, "FW feature report failed: sent %d of %d\n", res, DS_INPUT_REPORT_USB_SIZE);
-		return -1;
-	}
-	return 0;
-}
-
-static uint8_t *load_fw(const char *path, size_t *size)
-{
-	FILE *f = fopen(path, "rb");
-	if(!f)
-		return NULL;
-	
-	fseek(f, 0, SEEK_END);
-	*size = ftell(f);
-	rewind(f);
-	
-	uint8_t *buf = malloc(*size);
-	if(!buf){
-		fclose(f);
-		return NULL;
-	}
-
-	if(fread(buf, 1, *size, f) != *size){
-		free(buf);
-		fclose(f);
-		return NULL;
-	}
-
-	fclose(f);
-	return buf;
-}
-
-int dualsense_fw_wait_status(struct dualsense *ds, uint8_t expected)
-{
-	struct timespec ts = {
-		.tv_sec = 0,
-		.tv_nsec = 10 * 1000 * 1000 // 10ms
-	};
-
-	uint8_t buf[DS_INPUT_REPORT_USB_SIZE];
-	while(1){
-		memset(buf, 0, sizeof(buf));
-		buf[0] = DS_FEATURE_REPORT_FW_STATUS;
-
-		int res = hid_get_feature_report(ds->dev, buf, sizeof(buf));
-
-		if(res < 0)
-			return -1;
-
-		uint8_t phase = buf[1];
-		uint8_t status = buf[2];
-
-		if(phase != expected)
-			return -1;
-
-		switch (status) {
-			case 0x00: return 0;
-			case 0x01:
-				thrd_sleep(&ts, NULL);
-				break;
-			case 0x02:
-				fprintf(stderr, "Error: invalid firmware size\n");
-				return -2;
-			case 0x03:
-				if(expected == 0x01)
-					return 0;
-				
-				fprintf(stderr, "Error: invalid firmware binary\n");
-				return -3;
-			case 0x04:
-				if(expected == 0x0 || expected == 0x02){
-					sleep(10);
-					break;
-				}
-				fprintf(stderr, "Error: invalid firmware binary\n");
-				return -4;
-			case 0x10: 
-				thrd_sleep(&ts, NULL);
-				break;
-			case 0x11:
-				fprintf(stderr, "Error: invalid firmware binary\n");
-				return -0x11;
-			case 0xFF:
-				fprintf(stderr, "Error: Internal firmware error\n");
-				return -0xFF;
-			default: 
-				fprintf(stderr, "Error: Unknown firmware error\n");
-				return -1;
-		}
-	}
-}
-
-int dualsense_fw_start(struct dualsense *ds, uint8_t *fw)
-{	
-	printf("Checking firmware header...\n");
-	struct timespec ts = {
-		.tv_nsec = 50 * 1000 * 1000 // 50ms
-	};
-
-	uint8_t buf[DS_INPUT_REPORT_USB_SIZE];
-	
-	for(int offset = 0; offset < 256; offset += 57){
-
-		uint32_t remaining = 256 - offset; 
-		uint32_t chunk_size = (remaining < 57) ? remaining : 57;
-
-		memset(buf, 0, sizeof(buf));
-		buf[0] = DS_FEATURE_REPORT_FW;
-		buf[2] = chunk_size;
-		memcpy(buf + 3, fw + offset, chunk_size);
-
-		if(dualsense_send_fw_feature(ds, buf)){
-			fprintf(stderr, "Failed to send chunk at offset %d\n", offset);
-			return -1;
-		}
-
-		if(offset == 0)
-			thrd_sleep(&ts, NULL);	
-	}
-
-	return dualsense_fw_wait_status(ds, 0x0);
-}
-
-int dualsense_fw_write(struct dualsense *ds, uint8_t *fw, size_t size)
-{
-	struct timespec ts = {
-		.tv_nsec = 10 * 1000 * 1000
-	};
-
-	uint8_t buf[DS_INPUT_REPORT_USB_SIZE];
-
-	for(size_t offset = 0; offset < size; offset += 0x8000){
-		for(size_t chunk_offset = 0; chunk_offset < 0x8000; chunk_offset += 57) {
-
-			uint32_t remaining = 0x8000 - chunk_offset;
-			uint32_t packet_size = (remaining < 57) ? remaining : 57;
-
-			memset(buf, 0, sizeof(buf));
-			buf[0] = DS_FEATURE_REPORT_FW;
-			buf[1] = 0x01;
-			buf[2] = packet_size;	
-			memcpy(buf + 3, fw + offset + chunk_offset, packet_size);
-
-			if(dualsense_send_fw_feature(ds, buf))
-				return -1;
-
-			if(dualsense_fw_wait_status(ds, 0x01))
-				return -1;
-
-			thrd_sleep(&ts, NULL);
-
-			int32_t progress = (offset + chunk_offset - 256) * 100 / (size - 256);
-			if(progress > 100) progress = 100;
-			if(progress < 0) progress = 0;
-
-			printf("\rWriting firmware: %3d%% ", progress);
-			fflush(stdout);
-		}
-	}
-	
-	printf("\rWriting firmware: 100%% Done!\n");
-	return 0;
-}
-
-int dualsense_fw_verify(struct dualsense *ds)
-{
-	printf("Verifying firmware...\n");
-
-	uint8_t buf[DS_INPUT_REPORT_USB_SIZE] = {0};
-	buf[0] = DS_FEATURE_REPORT_FW;
-	buf[1] = 0x02;
-
-	if(dualsense_send_fw_feature(ds, buf)){
-		return -1;
-	}
-
-	return dualsense_fw_wait_status(ds, 0x02);
-}
-
-int dualsense_fw_finalize(struct dualsense *ds)
-{
-	printf("Last steps...\n");
-	uint8_t buf[DS_INPUT_REPORT_USB_SIZE] = {0};
-	buf[0] = DS_FEATURE_REPORT_FW;
-	buf[1] = 0x03;
-
-	return dualsense_send_fw_feature(ds, buf);
-}
-
-int dualsense_check_fw_compat(struct dualsense *ds, uint8_t *fw, size_t fw_size)
-{
-	if(fw_size < 0x80){
-		return -1;
-	}
-
-	uint16_t pid = fw[0x62] | (fw[0x63] << 8);
-	uint16_t version = fw[0x78] | (fw[0x79] << 8);
-
-	if(pid != ds->product_id) {
-		fprintf(stderr, "Firmware incompatible.\nFirmware device: 0x%04X\nConnected device: 0x%04X\n", pid, ds->product_id);
-		return -1;
-	}
-
-	uint8_t buf[DS_FEATURE_REPORT_FIRMWARE_INFO_SIZE];
-	memset(buf, 0, sizeof(buf));
-	buf[0] = DS_FEATURE_REPORT_FIRMWARE_INFO;
-	int res = hid_get_feature_report(ds->dev, buf, sizeof(buf));
-	if (res != sizeof(buf)) {
-		fprintf(stderr, "Invalid feature report\n");
-		return false;
-	}
-
-	struct dualsense_feature_report_firmware *ds_report;
-	ds_report = (struct dualsense_feature_report_firmware *)&buf;
-
-	printf("Updating firmware for %s\n",
-		(ds->product_id == DS_PRODUCT_ID ? "DualSense" : "DualSense Edge"));
-	printf("Firmware version change: %04x -> %04x\n", ds_report->update_version, version);
-	return 0;
-}
-
-int command_update(struct dualsense *ds, const char *path)
-{
-	if (ds->bt) {
-		fprintf(stderr, "Update via Bluetooth is not supported.\n");
-		fprintf(stderr, "Please connect to USB.\n");
-		return 1;
-	}
-
-	uint8_t data[DS_INPUT_REPORT_BT_SIZE];
-	int res = hid_read_timeout(ds->dev, data, sizeof(data), 1000);
-	if (res <= 0) {
-		if (res == 0) {
-			fprintf(stderr, "Timeout waiting for report\n");
-		} else {
-			fprintf(stderr, "Failed to read report %ls\n", hid_error(ds->dev));
-		}
-		return 2;
-	}
-
-	struct dualsense_input_report *ds_report;
-
-	if (data[0] == DS_INPUT_REPORT_USB && res == DS_INPUT_REPORT_USB_SIZE) {
-		ds_report = (struct dualsense_input_report *)&data[1];
-	} else {
-		fprintf(stderr, "Unhandled report ID %d\n", (int)data[0]);
-		return 3;
-	}
-
-	uint8_t battery_capacity;
-	uint8_t battery_data = ds_report->status & DS_STATUS_BATTERY_CAPACITY;
-	uint8_t charging_status = (ds_report->status & DS_STATUS_CHARGING) >> DS_STATUS_CHARGING_SHIFT;
-
-#define min(a, b) ((a) < (b) ? (a) : (b))
-	switch (charging_status) {
-		case 0x0:
-			/*
-	 * Each unit of battery data corresponds to 10%
-	 * 0 = 0-9%, 1 = 10-19%, .. and 10 = 100%
-	 */
-			battery_capacity = min(battery_data * 10 + 5, 100);
-			break;
-		case 0x1:
-			battery_capacity = min(battery_data * 10 + 5, 100);
-			break;
-		case 0x2:
-			battery_capacity = 100;
-			break;
-		case 0xa: /* voltage or temperature out of range */
-		case 0xb: /* temperature error */
-			battery_capacity = 0;
-			break;
-		case 0xf: /* charging error */
-		default:
-			battery_capacity = 0;
-	}
-	#undef min
-
-	if(battery_capacity < DS_BATTERY_THRESHOLD){
-		fprintf(stderr, "Battery is low, please charge controller to at least 10%%\n");
-		return 1;
-	}
-
-	size_t fw_size;
-	uint8_t *fw = load_fw(path, &fw_size);
-	if(!fw){
-		fprintf(stderr, "Failed to load firmware\n");
-		return 1;
-	}
-
-	if(fw_size != DS_FIRMWARE_SIZE){
-		fprintf(stderr, "Invalid firmware size\n");
-		return 1;
-	}
-	if(dualsense_check_fw_compat(ds, fw, fw_size)) {
-		free(fw);
-		return 1;
-	}
-
-	if(dualsense_fw_start(ds, fw)) {
-		fprintf(stderr, "Failed to start update\n");
-		free(fw);
-		return 1;
-	}
-
-	if(dualsense_fw_write(ds, fw, fw_size)){
-		fprintf(stderr, "Failed to write firmware\n");
-		free(fw);
-		return 1;
-	}
-
-	if(dualsense_fw_verify(ds)) {
-		fprintf(stderr, "Failed to verify firmware\n");
-		free(fw);
-		return 1;
-	}
-
-	if(dualsense_fw_finalize(ds)){
-		fprintf(stderr, "Failed to finalize update\n");
-		free(fw);
-		return 1;
-	}
-
-	printf("Update complete, please reconnect controller.\n");
-	free(fw);
-	return 0;
-}
-
-int list_devices(void)
+/* debug function
+int dualsense_list_devices(void)
 {
     struct hid_device_info *devs = dualsense_hid_enumerate();
     if (!devs) {
@@ -1129,4 +780,4 @@ int list_devices(void)
         dev = dev->next;
     }
     return 0;
-}
+} */
