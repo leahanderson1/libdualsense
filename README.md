@@ -18,7 +18,7 @@ windows:
 
 (get hidapi headers and place in the repo root)
 
-`x86-64-w64-mingw32-gcc -c -02 libdualsense.c c11threads_win32.c -I.` `x86-64-w64-mingw32-ar -crs libdualsense.lib libdualsense.o c11threads_win32.o`
+`x86-64-w64-mingw32-gcc -c -02 libdualsense.c -I.` `x86-64-w64-mingw32-ar -crs libdualsense.lib libdualsense.o`
 
 The resulting file works just the same as any other old windows static library, also note you'll have to link your app with hidapi.dll and include it with the distribution of your executable.
 
