@@ -3,6 +3,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <stdbool.h>
 #include <stdint.h>
 #include <hidapi/hidapi.h>
 // SPDX-License-Identifier: GPL-2.0-or-later
